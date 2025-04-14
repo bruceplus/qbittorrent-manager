@@ -1,0 +1,2 @@
+# 当前使用的环境名称，对应 config/ 目录下的 xxx.yaml 文件
+use_env: "home"

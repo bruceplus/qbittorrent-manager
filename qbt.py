@@ -3,40 +3,28 @@ import csv
 import sys
 import datetime
 from collections import defaultdict
+import yaml
+import os
 
-# 登录配置
+# 读取主配置文件
+with open("config.yml", "r", encoding="utf-8") as f:  # 添加 encoding="utf-8"
+    main_config = yaml.safe_load(f)
+env_name = main_config["use_env"]
 
-qb_host = "192.168.1.24"
-qb_port = 8085
-qb_username = "admin"
-qb_password = "gC3jlUwYdgLyCUZl9DaN"
-
-# 删除种子时是否同时删除本地文件
-
-delete_files_on_remove = True
-
-# 配置tracker，如果种子中不包含配置中的tracker，则删除该种子，包含所有tracker
-
-required_trackers = ["tracker.qingwapt"]
-# 配置tracker，统计数据
-
-required_summer = ["tracker.m-team.cc"]
-# 对tracker限速
-
-upload_speed_limits_by_tracker = {
-    "pt.btschool": 60,
-    "ptl.gs": 60,
-    "rousi.zip": 60,
-    "t.hddolby.com": 100,
-    "t.ubits.club": 0,
-    "tracker.hdtime.org": 60,
-    "tracker.icc2022.xyz": 60,
-    "tracker.ptcafe.club": 60,
-    "tracker.ptvicomo.net": 60,
-    "www.pttime.org": 60,
-    "tracker.m-team.cc": 200,
-    "tracker.qingwapt": 100,
-}
+# 读取环境特定的配置文件
+config_path = os.path.join("config", f"{env_name}.yaml")
+with open(config_path, "r", encoding="utf-8") as f:  # 添加 encoding="utf-8"
+    config = yaml.safe_load(f)
+    
+# 从配置文件中提取配置
+qb_host = config["qbittorrent"]["host"]
+qb_port = config["qbittorrent"]["port"]
+qb_username = config["qbittorrent"]["username"]
+qb_password = config["qbittorrent"]["password"]
+delete_files_on_remove = config["delete_files_on_remove"]
+required_trackers = config["required_trackers"]
+required_summer = config["required_summer"]
+upload_speed_limits_by_tracker = config["upload_speed_limits_by_tracker"]
 
 # 登录客户端
 

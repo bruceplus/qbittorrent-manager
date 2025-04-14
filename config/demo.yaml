@@ -1,0 +1,22 @@
+# ==== qBittorrent 客户端连接信息 ====
+qbittorrent:
+  host: "192.168.1.28"     # 客户端 IP 或域名
+  port: 8005               # Web UI 端口
+  username: "admin"        # 登录用户名
+  password: "your_password_here"  # 登录密码
+
+# ==== 删除种子时是否同时删除本地文件 ====
+delete_files_on_remove: true
+
+# ==== tracker 列表，当种子没有该tracker时，会将该种子导出或删除 ====
+required_trackers:
+  - "tracker.your"
+
+# ==== 需要统计数据的 tracker（用于 total 命令） ====
+required_summer:
+  - "tracker.m-your.cc"
+
+# ==== 根据 tracker 域名限速（单位：KB/s） ====
+upload_speed_limits_by_tracker:
+  "pt.your": 600
+  "ptl.your": 600
