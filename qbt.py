@@ -1,3 +1,4 @@
+import math
 import qbittorrentapi
 import csv
 import sys
@@ -25,6 +26,7 @@ delete_files_on_remove = config["delete_files_on_remove"]
 required_trackers = config["required_trackers"]
 required_summer = config["required_summer"]
 upload_speed_limits_by_tracker = config["upload_speed_limits_by_tracker"]
+export_deduplicate = config.get("export_options", {}).get("deduplicate", True)
 
 # 登录客户端
 
@@ -37,6 +39,19 @@ try:
 except qbittorrentapi.LoginFailed as e:
     print(f"登录失败: {e}")
     exit(1)
+    
+def convert_size(size_bytes):
+    """
+    将字节大小转换为合适的单位
+    :param size_bytes: 字节大小
+    :return: 转换后的字符串，如 "1.23 GB"
+    """
+    if size_bytes == 0:
+        return "0 B"
+    units = ("B", "KB", "MB", "GB", "TB", "PB")
+    i = min(int(math.log(size_bytes, 1024)), len(units) - 1)
+    size = round(size_bytes / (1024 ** i), 2)
+    return f"{size} {units[i]}"
 
 
 def check_missing_trackers():
@@ -71,12 +86,18 @@ def check_missing_trackers():
 
 def export_missing_trackers(filename="missing_trackers.csv"):
     result = check_missing_trackers()
+    total_size = sum(item["size"] for item in result)
+    
     with open(filename, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(["种子名称", "大小（字节）", "所有 Tracker"])
         for item in result:
             writer.writerow([item["name"], item["size"], ", ".join(item["trackers"])])
-    print(f"✅ 导出完成，共 {len(result)} 项 → {filename}")
+        # 新增统计行
+        writer.writerow([])
+        writer.writerow(["总计", f"{total_size} 字节", f"({convert_size(total_size)})"])
+    
+    print(f"✅ 导出完成，共 {len(result)} 项，总大小 {convert_size(total_size)} → {filename}")
 
 
 def delete_missing_trackers():
@@ -188,63 +209,104 @@ def export_tracker_summary(filename="tracker_summary.csv"):
             trk for trk in valid_trackers if any(req in trk for req in required_summer)
         ]
         if matched:
-            created_on = datetime.datetime.fromtimestamp(torrent.added_on).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-            results.append(
-                {
-                    "name": torrent.name,
-                    "size": torrent.total_size,
-                    "created_on": created_on,
-                    "matched_trackers": ", ".join(matched),
-                }
-            )
+            results.append({
+                "name": torrent.name,
+                "size": torrent.total_size,
+                "created_on": created_on,
+                "matched_trackers": ", ".join(matched),
+            })
             total_size += torrent.total_size
+    
     with open(filename, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(["种子名称", "大小（字节）", "创建时间", "匹配的 Tracker"])
         for item in results:
-            writer.writerow(
-                [
-                    item["name"],
-                    item["size"],
-                    item["created_on"],
-                    item["matched_trackers"],
-                ]
-            )
-    print(f"✅ 导出完成：{len(results)} 个种子 → {filename}")
-    print(f"📦 总大小：{total_size} 字节（约 {total_size / (1024 ** 3):.2f} GB）")
+            writer.writerow([
+                item["name"],
+                item["size"],
+                item["created_on"],
+                item["matched_trackers"],
+            ])
+        # 新增统计行
+        writer.writerow([])
+        writer.writerow(["总计", f"{total_size} 字节", f"({convert_size(total_size)})", ""])
+    
+    print(f"✅ 导出完成：{len(results)} 个种子，总大小 {convert_size(total_size)} → {filename}")
+    print(f"📦 总大小：{total_size} 字节（{convert_size(total_size)}）")
 
 
 def export_torrents_by_filter(
-    keyword=None, min_size=None, max_size=None, filename="filtered_torrents.csv"
+    keyword=None, 
+    min_size=None, 
+    max_size=None, 
+    filename="filtered_torrents.csv"
 ):
+    print(f"DEBUG: export_deduplicate = {export_deduplicate}")
     torrents = client.torrents_info()
     results = []
-    for torrent in torrents:
-        if keyword and keyword.lower() not in torrent.name.lower():
-            continue
-        if min_size and torrent.total_size < min_size:
-            continue
-        if max_size and torrent.total_size > max_size:
-            continue
-        created_on = datetime.datetime.fromtimestamp(torrent.added_on).strftime(
-            "%Y-%m-%d %H:%M:%S"
-        )
-        trackers = client.torrents_trackers(torrent.hash)
-        all_trackers = [
-            t.url
-            for t in trackers
-            if not any(proto in t.url for proto in ["[DHT]", "[PeX]", "[LSD]"])
-        ]
-        results.append(
-            {
+    total_size = 0  # Initialize total_size here
+    
+    if export_deduplicate:
+        grouped = defaultdict(list)
+        for torrent in torrents:
+            if keyword and keyword.lower() not in torrent.name.lower():
+                continue
+            if min_size and torrent.total_size < min_size:
+                continue
+            if max_size and torrent.total_size > max_size:
+                continue
+            key = (torrent.name, torrent.total_size)
+            grouped[key].append(torrent)
+        
+        for (name, size), torrent_group in grouped.items():
+            # 合并所有tracker（去重）
+            all_trackers = set()
+            created_on = None
+            for t in torrent_group:
+                trackers = client.torrents_trackers(t.hash)
+                for tracker in trackers:
+                    url = tracker.url
+                    if not any(x in url for x in ["[DHT]", "[PeX]", "[LSD]"]):
+                        all_trackers.add(url)
+                # 取最早的创建时间
+                added_on = datetime.datetime.fromtimestamp(t.added_on)
+                if created_on is None or added_on < created_on:
+                    created_on = added_on
+            
+            results.append({
+                "name": name,
+                "size": size,
+                "created_on": created_on.strftime("%Y-%m-%d %H:%M:%S"),
+                "trackers": ", ".join(all_trackers),
+            })
+            total_size += size  # Add size after deduplication
+    else:
+        for torrent in torrents:
+            if keyword and keyword.lower() not in torrent.name.lower():
+                continue
+            if min_size and torrent.total_size < min_size:
+                continue
+            if max_size and torrent.total_size > max_size:
+                continue
+                
+            created_on = datetime.datetime.fromtimestamp(torrent.added_on).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+            trackers = client.torrents_trackers(torrent.hash)
+            all_trackers = [
+                t.url
+                for t in trackers
+                if not any(proto in t.url for proto in ["[DHT]", "[PeX]", "[LSD]"])
+            ]
+            results.append({
                 "name": torrent.name,
                 "size": torrent.total_size,
                 "created_on": created_on,
                 "trackers": ", ".join(all_trackers),
-            }
-        )
+            })
+            total_size += torrent.total_size  # Add size for non-deduplicated case
+
+    # 写入CSV文件
     with open(filename, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
         writer.writerow(["种子名称", "大小（字节）", "创建时间", "所有 Tracker"])
@@ -252,8 +314,12 @@ def export_torrents_by_filter(
             writer.writerow(
                 [item["name"], item["size"], item["created_on"], item["trackers"]]
             )
-    print(f"✅ 导出完成，共 {len(results)} 项 → {filename}")
-
+        # 新增一行统计信息
+        writer.writerow([])  # 空行分隔
+        writer.writerow(["总计", f"{total_size} 字节", f"({convert_size(total_size)})", ""])
+    
+    print(f"✅ 导出完成，共 {len(results)} 项，总大小 {convert_size(total_size)} → {filename}")
+    
 
 # ========== 主函数，根据命令行参数执行 ==========
 

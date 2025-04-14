@@ -20,3 +20,8 @@ required_summer:
 upload_speed_limits_by_tracker:
   "pt.your": 600
   "ptl.your": 600
+  
+# 查询导出配置项
+export_options:
+# 是否对导出的种子进行去重 true或者false
+  deduplicate: true  
