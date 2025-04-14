@@ -209,6 +209,7 @@ def export_tracker_summary(filename="tracker_summary.csv"):
             trk for trk in valid_trackers if any(req in trk for req in required_summer)
         ]
         if matched:
+            created_on = datetime.datetime.fromtimestamp(torrent.added_on).strftime("%Y-%m-%d %H:%M:%S")
             results.append({
                 "name": torrent.name,
                 "size": torrent.total_size,
