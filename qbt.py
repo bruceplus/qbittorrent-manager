@@ -63,14 +63,27 @@ def check_missing_trackers():
     results = []
     for (name, size), torrent_group in grouped.items():
         all_trackers = set()
+        tracker_comment_pairs = set()
         hashes = []
         for t in torrent_group:
             hashes.append(t.hash)
             trackers = client.torrents.trackers(t.hash)
-            for tracker in trackers:
-                url = tracker.url
-                if not any(x in url for x in ["[DHT]", "[PeX]", "[LSD]"]):
-                    all_trackers.add(url)
+            valid_trackers = [
+                tracker.url
+                for tracker in trackers
+                if not any(x in tracker.url for x in ["[DHT]", "[PeX]", "[LSD]"])
+            ]
+            for tracker_url in valid_trackers:
+                all_trackers.add(tracker_url)
+            try:
+                properties = client.torrents_properties(t.hash)
+                comment = properties.comment or ""
+                if comment:  # 只为非空注释创建 tracker-comment 对
+                    for tracker_url in valid_trackers:
+                        pair = f"站点tracker：{tracker_url}-->>>注释：{comment}"
+                        tracker_comment_pairs.add(pair)
+            except Exception as e:
+                print(f"警告: 无法获取种子 {name} 的评论: {e}")
         if all(any(req in url for url in all_trackers) for req in required_trackers):
             continue
         results.append(
@@ -79,10 +92,10 @@ def check_missing_trackers():
                 "size": size,
                 "trackers": list(all_trackers),
                 "hashes": hashes,
+                "comment": "\n".join(sorted(tracker_comment_pairs)),  # 合并 tracker-comment 对
             }
         )
     return results
-
 
 def export_missing_trackers(filename="missing_trackers.csv"):
     result = check_missing_trackers()
@@ -90,12 +103,11 @@ def export_missing_trackers(filename="missing_trackers.csv"):
     
     with open(filename, "w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow(["种子名称", "大小（字节）", "所有 Tracker"])
+        writer.writerow(["种子名称", "大小（字节）", "所有 Tracker", "种子注释"])
         for item in result:
-            writer.writerow([item["name"], item["size"], ", ".join(item["trackers"])])
-        # 新增统计行
+            writer.writerow([item["name"], item["size"], ", ".join(item["trackers"]), item["comment"]])
         writer.writerow([])
-        writer.writerow(["总计", f"{total_size} 字节", f"({convert_size(total_size)})"])
+        writer.writerow(["总计", f"{total_size} 字节", f"({convert_size(total_size)})", ""])
     
     print(f"✅ 导出完成，共 {len(result)} 项，总大小 {convert_size(total_size)} → {filename}")
 
