@@ -78,21 +78,25 @@ def check_missing_trackers():
             try:
                 properties = client.torrents_properties(t.hash)
                 comment = properties.comment or ""
-                if comment:  # 只为非空注释创建 tracker-comment 对
+                if comment:  # Only create tracker-comment pairs for non-empty comments
                     for tracker_url in valid_trackers:
                         pair = f"站点tracker：{tracker_url}-->>>注释：{comment}"
                         tracker_comment_pairs.add(pair)
             except Exception as e:
                 print(f"警告: 无法获取种子 {name} 的评论: {e}")
-        if all(any(req in url for url in all_trackers) for req in required_trackers):
+
+        # If ANY of the torrent's trackers match ANY of the required trackers, skip it.
+        if any(any(req in url for req in required_trackers) for url in all_trackers):
             continue
+
+        # Otherwise, the torrent is missing all required trackers, so add it to the results.
         results.append(
             {
                 "name": name,
                 "size": size,
                 "trackers": list(all_trackers),
                 "hashes": hashes,
-                "comment": "\n".join(sorted(tracker_comment_pairs)),  # 合并 tracker-comment 对
+                "comment": "\n".join(sorted(tracker_comment_pairs)),  # Merge tracker-comment pairs
             }
         )
     return results
