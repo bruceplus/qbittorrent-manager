@@ -23,10 +23,13 @@ qb_port = config["qbittorrent"]["port"]
 qb_username = config["qbittorrent"]["username"]
 qb_password = config["qbittorrent"]["password"]
 delete_files_on_remove = config["delete_files_on_remove"]
-required_trackers = config["required_trackers"]
 required_summer = config["required_summer"]
 upload_speed_limits_by_tracker = config["upload_speed_limits_by_tracker"]
 export_deduplicate = config.get("export_options", {}).get("deduplicate", True)
+# 检查策略配置
+check_strategies = config.get("check_strategies", {})
+# 读取启用的检查策略列表
+active_strategies = config.get("active_strategies", [])  
 
 # 登录客户端
 
@@ -54,20 +57,30 @@ def convert_size(size_bytes):
     return f"{size} {units[i]}"
 
 
-def check_missing_trackers():
-    torrents = client.torrents.info()
-    grouped = defaultdict(list)
-    for torrent in torrents:
-        key = (torrent.name, torrent.total_size)
-        grouped[key].append(torrent)
-    results = []
-    for (name, size), torrent_group in grouped.items():
+# 检查策略基类
+class CheckStrategy:
+    def check(self, torrent_group, client):
+        """
+        检查一组种子是否符合策略
+        :param torrent_group: 按 (name, size) 分组的种子列表
+        :param client: qBittorrent 客户端
+        :return: dict - 种子信息（如果需要处理），否则返回 None
+        """
+        raise NotImplementedError("子类必须实现 check 方法")
+
+# 策略：检查缺失特定Tracker
+class MissingTrackersStrategy(CheckStrategy):
+    def __init__(self, required_trackers):
+        self.required_trackers = required_trackers
+
+    def check(self, torrent_group, client):
         all_trackers = set()
         tracker_comment_pairs = set()
-        hashes = []
+        hashes = [t.hash for t in torrent_group]
+        name, size = torrent_group[0].name, torrent_group[0].total_size
+
         for t in torrent_group:
-            hashes.append(t.hash)
-            trackers = client.torrents.trackers(t.hash)
+            trackers = client.torrents_trackers(t.hash)
             valid_trackers = [
                 tracker.url
                 for tracker in trackers
@@ -78,29 +91,171 @@ def check_missing_trackers():
             try:
                 properties = client.torrents_properties(t.hash)
                 comment = properties.comment or ""
-                if comment:  # Only create tracker-comment pairs for non-empty comments
+                if comment:
                     for tracker_url in valid_trackers:
                         pair = f"站点tracker：{tracker_url}-->>>注释：{comment}"
                         tracker_comment_pairs.add(pair)
             except Exception as e:
                 print(f"警告: 无法获取种子 {name} 的评论: {e}")
 
-        # If ANY of the torrent's trackers match ANY of the required trackers, skip it.
-        if any(any(req in url for req in required_trackers) for url in all_trackers):
-            continue
-
-        # Otherwise, the torrent is missing all required trackers, so add it to the results.
-        results.append(
-            {
+        # 如果没有任何必需的Tracker匹配，则需要处理
+        if not any(any(req in url for req in self.required_trackers) for url in all_trackers):
+            return {
                 "name": name,
                 "size": size,
                 "trackers": list(all_trackers),
                 "hashes": hashes,
-                "comment": "\n".join(sorted(tracker_comment_pairs)),  # Merge tracker-comment pairs
+                "comment": "\n".join(sorted(tracker_comment_pairs))
             }
-        )
+        return None
+        
+# 策略：检查种子名称是否包含官组名称
+class OfficialGroupStrategy(CheckStrategy):
+    def __init__(self, group_names):
+        self.group_names = [name.lower() for name in group_names]  # 转换为小写以不区分大小写
+
+    def check(self, torrent_group, client):
+        name, size = torrent_group[0].name, torrent_group[0].total_size
+        hashes = [t.hash for t in torrent_group]
+        # 检查种子名称是否包含任一官组名称（不区分大小写）
+        if not any(group_name in name.lower() for group_name in self.group_names):
+            all_trackers = set()
+            tracker_comment_pairs = set()
+            for t in torrent_group:
+                trackers = client.torrents_trackers(t.hash)
+                valid_trackers = [
+                    tracker.url
+                    for tracker in trackers
+                    if not any(x in tracker.url for x in ["[DHT]", "[PeX]", "[LSD]"])
+                ]
+                all_trackers.update(valid_trackers)
+                try:
+                    properties = client.torrents_properties(t.hash)
+                    comment = properties.comment or ""
+                    if comment:
+                        for tracker_url in valid_trackers:
+                            pair = f"站点tracker：{tracker_url}-->>>注释：{comment}"
+                            tracker_comment_pairs.add(pair)
+                except Exception as e:
+                    print(f"警告: 无法获取种子 {name} 的评论: {e}")
+            return {
+                "name": name,
+                "size": size,
+                "trackers": list(all_trackers),
+                "hashes": hashes,
+                "comment": f"Does not belong to official group: {', '.join(self.group_names)}"
+            }
+        return None
+        
+# 策略：根据tracker标签过滤
+class TrackerTagFilterStrategy(CheckStrategy):
+    def __init__(self, forbidden_tags):
+        self.forbidden_tags = [tag.lower() for tag in forbidden_tags]
+
+    def check(self, torrent_group, client):
+        name, size = torrent_group[0].name, torrent_group[0].total_size
+        hashes = [t.hash for t in torrent_group]
+        all_trackers = set()
+        tracker_comment_pairs = set()
+        has_forbidden_tag = False
+
+        for t in torrent_group:
+            trackers = client.torrents_trackers(t.hash)
+            valid_trackers = [
+                tracker.url
+                for tracker in trackers
+                if not any(x in tracker.url for x in ["[DHT]", "[PeX]", "[LSD]"])
+            ]
+            all_trackers.update(valid_trackers)
+            try:
+                properties = client.torrents_properties(t.hash)
+                comment = properties.comment or ""
+                if comment:
+                    for tracker_url in valid_trackers:
+                        pair = f"站点tracker：{tracker_url}-->>>注释：{comment}"
+                        tracker_comment_pairs.add(pair)
+                # 检查标签
+                tags = t.tags.split(",") if t.tags else []
+                tags = [tag.strip().lower() for tag in tags]
+                if any(tag in self.forbidden_tags for tag in tags):
+                    has_forbidden_tag = True
+            except Exception as e:
+                print(f"警告: 无法获取种子 {name} 的属性: {e}")
+
+        # 反转逻辑：如果没有禁止标签，则需要处理（返回种子信息）
+        if not has_forbidden_tag:
+            return {
+                "name": name,
+                "size": size,
+                "trackers": list(all_trackers),
+                "hashes": hashes,
+                "comment": f"Does not contain protected tags: {', '.join(self.forbidden_tags)}"
+            }
+        return None
+
+# 策略工厂：根据配置动态创建策略
+class StrategyFactory:
+    @staticmethod
+    def create_strategy(strategy_name, config):
+        if strategy_name == "missing_trackers":
+            return MissingTrackersStrategy(config.get("required_trackers", []))
+        elif strategy_name == "official_group":
+            groups = config.get("groups", {})
+            selected_group = config.get("selected_group", "")
+            if selected_group not in groups:
+                raise ValueError(f"未找到指定的官组: {selected_group}")
+            return OfficialGroupStrategy(groups[selected_group])
+        elif strategy_name == "tracker_tag_filter":
+            return TrackerTagFilterStrategy(config.get("forbidden_tags", []))
+        else:
+            raise ValueError(f"未知策略: {strategy_name}")
+
+def check_missing_trackers():
+    # 创建所有启用的策略实例
+    strategies = []
+    for strategy_name in active_strategies:
+        strategy_config = check_strategies.get(strategy_name, {})
+        try:
+            strategy = StrategyFactory.create_strategy(strategy_name, strategy_config)
+            strategies.append(strategy)
+        except ValueError as e:
+            print(f"⚠️ 跳过无效策略 {strategy_name}: {e}")
+            continue
+    
+    if not strategies:
+        print("❌ 无有效策略配置")
+        return []
+    
+    # 获取所有种子并按 (name, size) 分组
+    torrents = client.torrents_info()
+    grouped = defaultdict(list)
+    for torrent in torrents:
+        key = (torrent.name, torrent.total_size)
+        grouped[key].append(torrent)
+    
+    # 初始化待处理的种子组
+    current_groups = grouped
+    
+    # 按策略顺序逐层过滤
+    for idx, strategy in enumerate(strategies, 1):
+        next_groups = defaultdict(list)
+        results = []
+        seen_hashes = set()  # 用于去重
+        
+        for key, torrent_group in current_groups.items():
+            result = strategy.check(torrent_group, client)
+            if result and not any(h in seen_hashes for h in result["hashes"]):
+                results.append(result)
+                seen_hashes.update(result["hashes"])
+                next_groups[key] = torrent_group  # 保留满足条件的种子组
+        
+        print(f"✅ 策略 {idx}: {type(strategy).__name__} 过滤后剩余 {len(next_groups)} 个种子组")
+        current_groups = next_groups  # 更新为下一轮的输入
+    
+    # 返回最终结果
     return results
 
+# 导出
 def export_missing_trackers(filename="missing_trackers.csv"):
     result = check_missing_trackers()
     total_size = sum(item["size"] for item in result)
@@ -115,7 +270,7 @@ def export_missing_trackers(filename="missing_trackers.csv"):
     
     print(f"✅ 导出完成，共 {len(result)} 项，总大小 {convert_size(total_size)} → {filename}")
 
-
+# 删除
 def delete_missing_trackers():
     result = check_missing_trackers()
     total = 0
@@ -361,7 +516,7 @@ if __name__ == "__main__":
             except ValueError:
                 print("❌ 第三个参数必须是整数大小（字节）")
         else:
-            print("❗用法: python qbt.py del <种子名称> <大小（字节）>")
+            print("❗用法: python qbt.py del 或 python qbt.py del <种子名称> <大小（字节）>")
     elif cmd == "limit":
         limit_upload_speed_by_tracker()
     elif cmd == "total":

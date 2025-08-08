@@ -8,10 +8,6 @@ qbittorrent:
 # ==== 删除种子时是否同时删除本地文件 ====
 delete_files_on_remove: true
 
-# ==== tracker 列表，当种子没有该tracker时，会将该种子导出或删除 ====
-required_trackers:
-  - "tracker.your"
-
 # ==== 需要统计数据的 tracker（用于 total 命令） ====
 required_summer:
   - "tracker.m-your.cc"
@@ -25,3 +21,26 @@ upload_speed_limits_by_tracker:
 export_options:
 # 是否对导出的种子进行去重 true或者false
   deduplicate: true  
+  
+# ==== 启用的检查策略列表（按顺序执行，串行过滤）====
+# missing_trackers     tracker 列表，当种子没有该tracker时，会将该种子导出或删除 
+# tracker_tag_filter   指定种子标签，当种子包含此标签，跳过
+# official_group       指定官组后缀，当种子包含此后缀，跳过
+active_strategies:
+  - missing_trackers
+  
+# ==== 检查策略配置 ====
+check_strategies:
+  missing_trackers:
+  # ==== tracker 列表，当种子没有该tracker时，会将该种子导出或删除 ====
+    required_trackers:
+      - tracker.xxx.com
+  official_group:
+    groups:
+      group1: ["aaa","bbb"]
+    selected_group: "group1"  # 指定当前使用的官组名称数组
+  tracker_tag_filter:
+    forbidden_tags:
+      - "MOVIEPILOT"
+      - "PTD"
+      - "GAME"
